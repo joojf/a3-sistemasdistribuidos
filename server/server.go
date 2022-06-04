@@ -6,6 +6,7 @@ import (
 	"log"
 	"math/rand"
 	"net"
+	"strconv"
 )
 
 const (
@@ -15,7 +16,7 @@ const (
 )
 
 type Cliente struct {
-	Id    int
+	Id    string
 	Nome  string
 	Email string
 	Role  string
@@ -23,7 +24,7 @@ type Cliente struct {
 
 type Request struct {
 	Params string `json:"params"`
-	Valor  int    `json:"valor"`
+	Valor  []byte `json:"valor"`
 }
 
 type RequestCriarCliente struct {
@@ -33,12 +34,12 @@ type RequestCriarCliente struct {
 }
 
 type RequestEncerrarLeilao struct {
-	Id int `json:"id"`
+	Id string `json:"id"`
 }
 
 type RequestCriarLeilao struct {
 	NomeVendedor    string `json:"nomeVendedor"`
-	LanceMinimo     int    `json:"lanceMinimo"`
+	LanceMinimo     string `json:"lanceMinimo"`
 	DescricaoArtigo string `json:"descricaoArtigo"`
 }
 
@@ -47,17 +48,18 @@ type ResponseListarLeiloes struct {
 }
 
 type Leilao struct {
-	Id              int
+	Id              string
 	Nome            string
-	LanceMinimo     int
+	LanceMinimo     string
 	DescricaoArtigo string
 	Vencedor        string
+	Status          string
 }
 
-type Lance struct {
-	IdLeilao int
+type RequestCriarLance struct {
+	IdLeilao string
 	Email    string
-	Valor    float64
+	Valor    string
 }
 
 var leiloes []Leilao
@@ -98,136 +100,125 @@ func handleRequest(conn net.Conn) {
 
 func handleClient(conn net.Conn) Cliente {
 	buffer := make([]byte, 1024)
-	_, err := conn.Read(buffer)
+	length, err := conn.Read(buffer)
 	if err != nil {
 		log.Fatal("Erro ao ler do cliente: ", err)
 	}
 
 	var cliente RequestCriarCliente
-	err = json.Unmarshal(buffer, &cliente)
+	json.Unmarshal(buffer[:length], &cliente)
+	_, err = conn.Write([]byte("ok"))
 	if err != nil {
-		log.Fatal("Erro ao converter json: ", err)
+		log.Fatal("Erro ao enviar para o cliente: ", err)
 	}
 
-	novoCliente := Cliente{
-		Id:    rand.Intn(100),
+	objetoCliente := Cliente{
+		Id:    strconv.Itoa(rand.Intn(100)),
 		Nome:  cliente.Nome,
 		Email: cliente.Email,
 		Role:  cliente.Role,
 	}
-	clientes = append(clientes, novoCliente)
-	fmt.Println("Cliente criado: ", novoCliente)
-	return novoCliente
+
+	fmt.Println("Cliente adicionado: ", objetoCliente)
+
+	clientes = append(clientes, objetoCliente)
+	return objetoCliente
 }
 
 func handleVendedor(conn net.Conn, cliente Cliente) {
 	for {
-		buffer := make([]byte, 1024)
-		_, err := conn.Read(buffer)
-		if err != nil {
-			log.Fatal("Erro ao ler do cliente: ", err)
-		}
-
+		message := handleMessage(conn)
 		var request Request
-		err = json.Unmarshal(buffer, &request)
-		if err != nil {
-			log.Fatal("Erro ao converter json: ", err)
-		}
+		json.Unmarshal([]byte(message), &request)
+
 		switch request.Params {
 		case "criarLeilao":
-			var request RequestCriarLeilao
-			handleCriarLeilao(conn, cliente, request.LanceMinimo, request.DescricaoArtigo)
+			var requestCriarLeilao RequestCriarLeilao
+			json.Unmarshal(request.Valor, &requestCriarLeilao)
+			itemLeilao := Leilao{
+				Id:              strconv.Itoa(rand.Intn(100)),
+				Nome:            requestCriarLeilao.NomeVendedor,
+				LanceMinimo:     requestCriarLeilao.LanceMinimo,
+				DescricaoArtigo: requestCriarLeilao.DescricaoArtigo,
+				Vencedor:        "",
+				Status:          "aberto",
+			}
+			leiloes = append(leiloes, itemLeilao)
+			fmt.Println("Leilão criado: ", itemLeilao)
+			conn.Write([]byte("Leilão criado com sucesso!"))
 		case "encerrarLeilao":
-			var request RequestEncerrarLeilao
-			handleEncerrarLeilao(conn, cliente, request.Id)
+			var requestEncerrarLeilao RequestEncerrarLeilao
+			json.Unmarshal(request.Valor, &requestEncerrarLeilao)
+			for i, leilao := range leiloes {
+				if leilao.Id == requestEncerrarLeilao.Id {
+					leiloes[i].Status = "encerrado"
+					leiloes = append(leiloes[:i], leiloes[i+1:]...)
+					conn.Write([]byte("Leilão encerrado com sucesso!"))
+					break
+				}
+			}
 		case "sair":
-			fmt.Println("Cliente saiu: ", cliente)
+			fmt.Println("Cliente desconectado: ", cliente)
+			conn.Write([]byte("Cliente desconectado!"))
 			return
 		default:
-			fmt.Println("Parâmetro inválido: ", request.Params)
+			fmt.Println("Mensagem desconhecida: ", request.Params)
+			conn.Write([]byte("Mensagem desconhecida!"))
 		}
 	}
 }
 
 func handleComprador(conn net.Conn, cliente Cliente) {
 	for {
-		buffer := make([]byte, 1024)
-		_, err := conn.Read(buffer)
-		if err != nil {
-			log.Fatal("Erro ao ler do cliente: ", err)
-		}
-
+		message := handleMessage(conn)
 		var request Request
-		err = json.Unmarshal(buffer, &request)
-		if err != nil {
-			log.Fatal("Erro ao converter json: ", err)
-		}
+		json.Unmarshal([]byte(message), &request)
 
 		switch request.Params {
 		case "listarLeiloes":
 			var response ResponseListarLeiloes
-			handleListarLeiloes(conn, cliente, &response)
-		case "fazerLance":
-			var lance Lance
-			handleFazerLance(conn, cliente, request.Valor, lance)
+			for _, leilao := range leiloes {
+				if leilao.Status == "aberto" {
+					response.Leiloes = append(response.Leiloes, leilao)
+				}
+			}
+			json, _ := json.Marshal(response)
+			conn.Write(json)
+		case "criarLance":
+			var requestCriarLance RequestCriarLance
+			json.Unmarshal(request.Valor, &requestCriarLance)
+			for _, leilao := range leiloes {
+				if leilao.Id == requestCriarLance.IdLeilao {
+					if leilao.Status == "aberto" {
+						if requestCriarLance.Valor > leilao.LanceMinimo {
+							leilao.LanceMinimo = requestCriarLance.Valor
+							leilao.Vencedor = cliente.Email
+							conn.Write([]byte("Lance criado com sucesso!"))
+							break
+						} else {
+							conn.Write([]byte("Valor do lance menor que o lance minimo!"))
+							break
+						}
+					}
+				}
+			}
 		case "sair":
-			fmt.Println("Cliente saiu: ", cliente)
+			fmt.Println("Cliente desconectado: ", clientes[0])
+			conn.Write([]byte("Cliente desconectado!"))
 			return
 		default:
-			fmt.Println("Parâmetro inválido: ", request.Params)
+			fmt.Println("Mensagem desconhecida: ", request.Params)
+			conn.Write([]byte("Mensagem desconhecida!"))
 		}
+
 	}
 }
 
-func handleCriarLeilao(conn net.Conn, cliente Cliente, lanceMinimo int, descricaoArtigo string) {
-	leilao := Leilao{
-		Id:              rand.Intn(100),
-		Nome:            cliente.Nome,
-		LanceMinimo:     lanceMinimo,
-		DescricaoArtigo: descricaoArtigo,
-		Vencedor:        "",
-	}
-	leiloes = append(leiloes, leilao)
-	fmt.Println("Leilão criado: ", leilao)
-	conn.Write([]byte("Leilão criado com sucesso!"))
-}
-
-func handleEncerrarLeilao(conn net.Conn, cliente Cliente, id int) {
-	for _, leilao := range leiloes {
-		if leilao.Id == id {
-			leilao.Vencedor = cliente.Nome
-			fmt.Println("Leilão encerrado: ", leilao)
-			conn.Write([]byte("Leilão encerrado com sucesso!"))
-			return
-		}
-	}
-	conn.Write([]byte("Leilão não encontrado!"))
-}
-
-func handleListarLeiloes(conn net.Conn, cliente Cliente, response *ResponseListarLeiloes) {
-	for _, leilao := range leiloes {
-		response.Leiloes = append(response.Leiloes, leilao)
-	}
-	buffer, err := json.Marshal(response)
+func handleMessage(conn net.Conn) string {
+	buffer := make([]byte, 1024)
+	length, err := conn.Read(buffer)
 	if err != nil {
-		log.Fatal("Erro ao converter json: ", err)
+		log.Fatal("Erro ao ler do cliente: ", err)
 	}
-	conn.Write(buffer)
-}
-
-func handleFazerLance(conn net.Conn, cliente Cliente, valor int, lance Lance) {
-	for _, leilao := range leiloes {
-		if leilao.Id == lance.IdLeilao {
-			if valor >= leilao.LanceMinimo {
-				leilao.Vencedor = lance.Email
-				fmt.Println("Lance feito: ", lance)
-				conn.Write([]byte("Lance feito com sucesso!"))
-				return
-			} else {
-				conn.Write([]byte("Valor do lance menor que o mínimo!"))
-				return
-			}
-		}
-	}
-	conn.Write([]byte("Leilão não encontrado!"))
+	return string(buffer[:length])
 }
