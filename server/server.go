@@ -3,222 +3,339 @@ package main
 import (
 	"encoding/json"
 	"fmt"
-	"log"
 	"math/rand"
 	"net"
 	"strconv"
 )
 
 const (
-	HOST            = "localhost"
-	PORT            = "12345"
+	HOST = "localhost"
+	PORT = "12345"
 	CONNECTION_TYPE = "tcp"
 )
 
-type Cliente struct {
-	Id    string
+const (
+	LEILAO_ATIVO     = "ATIVO"
+	LEILAO_ENCERRADO = "ENCERRADO"
+)
+
+type DbCliente struct {
 	Nome  string
 	Email string
 	Role  string
+	Id    string
 }
 
-type Request struct {
-	Params string `json:"params"`
-	Valor  []byte `json:"valor"`
+type Message struct {
+	Operacao string `json:"operacao"`
+	Message  []byte `json:"message"`
 }
-
-type RequestCriarCliente struct {
+type MessageCriarCliente struct {
 	Nome  string `json:"nome"`
 	Email string `json:"email"`
 	Role  string `json:"role"`
 }
 
-type RequestEncerrarLeilao struct {
+type MessageEncerrarLeilao struct {
 	Id string `json:"id"`
 }
 
-type RequestCriarLeilao struct {
-	NomeVendedor    string `json:"nomeVendedor"`
-	LanceMinimo     string `json:"lanceMinimo"`
-	DescricaoArtigo string `json:"descricaoArtigo"`
+type MessageCriarLeilao struct {
+	Nome      string `json:"nome"`
+	Descricao string `json:"descricao"`
+	Valor     string `json:"valor"`
 }
 
-type ResponseListarLeiloes struct {
-	Leiloes []Leilao `json:"leiloes"`
+type MessageRespostaListarLeiloesVendedor struct {
+	Leiloes []ItemLeilaoVendedor `json:"leiloes"`
 }
 
-type Leilao struct {
-	Id              string
-	Nome            string
-	LanceMinimo     string
-	DescricaoArtigo string
-	Vencedor        string
-	Status          string
+type MessageRespostaListarLeiloesComprador struct {
+	Leiloes []ItemLeilaoComprador `json:"leiloes"`
 }
 
-type RequestCriarLance struct {
-	IdLeilao string
-	Email    string
-	Valor    string
+type ItemLeilaoVendedor struct {
+	Id   string
+	Nome string
 }
 
-var leiloes []Leilao
-var clientes []Cliente
+type ItemLeilaoComprador struct {
+	Id            string
+	Nome          string
+	Descricao     string
+	ValorInicial  int
+	ApostaVigente Aposta
+}
+
+type ItemLeilaoDB struct {
+	Id            string
+	IdVendedor    string
+	Nome          string
+	Descricao     string
+	ApostaVigente Aposta
+	ValorInicial  int
+	Status        string
+}
+
+type Aposta struct {
+	EmailApostador string
+	Valor          int
+}
+
+type MessageDarLance struct {
+	Id    string `json:"id"`
+	Valor int    `json:"valor"`
+}
+
+var itensLeilaoDB []ItemLeilaoDB
+var clientes []DbCliente
 
 func main() {
-	fmt.Println("Iniciando servidor...")
+	fmt.Println("Iniciando servidor")
 	server, err := net.Listen(CONNECTION_TYPE, HOST+":"+PORT)
-	if err != nil {
-		log.Fatal("Erro ao iniciar servidor: ", err)
-	}
+	handleError(err, "Erro ao escutar host:")
 
 	defer server.Close()
-	fmt.Println("Servidor iniciado com sucesso!")
-	fmt.Println("Ouvindo conexões na porta: ", PORT)
+	fmt.Println("Escutando em " + server.Addr().String())
+	fmt.Println("Esperando conexões...")
 	for {
-		conn, err := server.Accept()
+		connection, err := server.Accept()
+
 		if err != nil {
-			log.Fatal("Erro ao aceitar conexão: ", err)
+			handleError(err, "Erro ao aceitar conexão:")
+			connection.Close()
+			continue
 		}
-		go handleRequest(conn)
+
+		fmt.Println("Conexão aceita do cliente: ", connection.RemoteAddr())
+		go processClient(connection)
 	}
-
 }
-
-func handleRequest(conn net.Conn) {
-	defer conn.Close()
-	fmt.Println("Nova conexão recebida: ", conn.RemoteAddr())
-
-	cliente := handleClient(conn)
+func processClient(connection net.Conn) {
+	defer func() {
+		if err := recover(); err != nil {
+			fmt.Println("Ocorreu um erro com a conexão do cliente:", connection.RemoteAddr(), "o erro foi:", err)
+		}
+	}()
+	cliente := handleAuthentication(connection)
 	if cliente.Role == "vendedor" {
-		go handleVendedor(conn, cliente)
+		handleVendedor(connection, cliente)
 	} else {
-		go handleComprador(conn, cliente)
+		handleComprador(connection, cliente)
 	}
-
 }
 
-func handleClient(conn net.Conn) Cliente {
+func handleError(err error, message string) {
+	if err != nil {
+		fmt.Println("[LEILAO_SERVER] "+message, err.Error())
+	}
+}
+
+func handleConnectionError(connection net.Conn, err error, message string) {
+	if err != nil {
+		handleError(err, "[CONNECTION_ERROR]: "+message)
+		connection.Close()
+		panic(err.Error())
+	}
+}
+
+func handleAuthentication(connection net.Conn) DbCliente {
 	buffer := make([]byte, 1024)
-	length, err := conn.Read(buffer)
-	if err != nil {
-		log.Fatal("Erro ao ler do cliente: ", err)
-	}
+	mLen, err := connection.Read(buffer)
+	fmt.Println("[LEILAO_SERVER] Cliente conectado: ", string(buffer[:mLen]))
+	handleConnectionError(connection, err, "Error reading")
 
-	var cliente RequestCriarCliente
-	json.Unmarshal(buffer[:length], &cliente)
-	_, err = conn.Write([]byte("ok"))
-	if err != nil {
-		log.Fatal("Erro ao enviar para o cliente: ", err)
+	var cliente MessageCriarCliente
+	json.Unmarshal(buffer[:mLen], &cliente)
+	_, err = connection.Write([]byte(cliente.Nome + " você já está conectado e já pode fazer leilões"))
+	handleConnectionError(connection, err, "Error writing")
+	dbCliente, exists := clienteExiste(cliente)
+	if exists {
+		fmt.Println("[LEILAO_SERVER] Cliente já existe", cliente)
+		return dbCliente.(DbCliente)
 	}
+	fmt.Println("[LEILAO_SERVER] Novo cliente adicionado", cliente)
 
-	objetoCliente := Cliente{
-		Id:    strconv.Itoa(rand.Intn(100)),
+	novoCliente := &DbCliente{
 		Nome:  cliente.Nome,
 		Email: cliente.Email,
 		Role:  cliente.Role,
+		Id:    generateRandomId(),
 	}
-
-	fmt.Println("Cliente adicionado: ", objetoCliente)
-
-	clientes = append(clientes, objetoCliente)
-	return objetoCliente
+	clientes = append(clientes, *novoCliente)
+	return *novoCliente
 }
 
-func handleVendedor(conn net.Conn, cliente Cliente) {
-	for {
-		message := handleMessage(conn)
-		var request Request
-		json.Unmarshal([]byte(message), &request)
+func clienteExiste(cliente MessageCriarCliente) (interface{}, bool) {
+	for _, value := range clientes {
 
-		switch request.Params {
-		case "criarLeilao":
-			var requestCriarLeilao RequestCriarLeilao
-			json.Unmarshal(request.Valor, &requestCriarLeilao)
-			itemLeilao := Leilao{
-				Id:              strconv.Itoa(rand.Intn(100)),
-				Nome:            requestCriarLeilao.NomeVendedor,
-				LanceMinimo:     requestCriarLeilao.LanceMinimo,
-				DescricaoArtigo: requestCriarLeilao.DescricaoArtigo,
-				Vencedor:        "",
-				Status:          "aberto",
+		if value.Email == cliente.Email && value.Nome == cliente.Nome && value.Role == cliente.Role {
+			return value, true
+		}
+	}
+	return nil, false
+}
+
+func handleComprador(connection net.Conn, comprador DbCliente) {
+	for {
+		message := handleSocketMessage(connection)
+		var jsonMsg Message
+		json.Unmarshal([]byte(message), &jsonMsg)
+		switch jsonMsg.Operacao {
+		case "LISTAR_LEILOES":
+			var leiloesAEnviar []ItemLeilaoComprador
+			for i, ild := range itensLeilaoDB {
+				if ild.Status == LEILAO_ATIVO {
+					leiloesAEnviar = append(leiloesAEnviar, ItemLeilaoComprador{
+						Id:            itensLeilaoDB[i].Id,
+						Nome:          itensLeilaoDB[i].Nome,
+						Descricao:     itensLeilaoDB[i].Descricao,
+						ApostaVigente: itensLeilaoDB[i].ApostaVigente,
+						ValorInicial:  itensLeilaoDB[i].ValorInicial,
+					})
+				}
 			}
-			leiloes = append(leiloes, itemLeilao)
-			fmt.Println("Leilão criado: ", itemLeilao)
-			conn.Write([]byte("Leilão criado com sucesso!"))
-		case "encerrarLeilao":
-			var requestEncerrarLeilao RequestEncerrarLeilao
-			json.Unmarshal(request.Valor, &requestEncerrarLeilao)
-			for i, leilao := range leiloes {
-				if leilao.Id == requestEncerrarLeilao.Id {
-					leiloes[i].Status = "encerrado"
-					leiloes = append(leiloes[:i], leiloes[i+1:]...)
-					conn.Write([]byte("Leilão encerrado com sucesso!"))
+
+			message, _ := json.Marshal(&MessageRespostaListarLeiloesComprador{
+				Leiloes: leiloesAEnviar,
+			})
+			sendMessageToClient(connection, string(message))
+		case "DAR_LANCE":
+			var lanceLeilao MessageDarLance
+			json.Unmarshal(jsonMsg.Message, &lanceLeilao)
+			fmt.Println("[LEILAO_SERVER]: Leilao recebido", lanceLeilao)
+			var ehMaiorLance bool
+			maiorQueValorInicial := true
+			for i, value := range itensLeilaoDB {
+				if value.Id == lanceLeilao.Id {
+					fmt.Println("[LEILAO_SERVER]: Leilao encontrado", value)
+
+					apostaAtual := itensLeilaoDB[i].ApostaVigente
+					fmt.Println("[LEILAO_SERVER]: Valor da aposta atual do artigo"+value.Nome+": ", apostaAtual.Valor)
+
+					if lanceLeilao.Valor < itensLeilaoDB[i].ValorInicial {
+						maiorQueValorInicial = false
+						break
+					}
+					if lanceLeilao.Valor > apostaAtual.Valor {
+						itensLeilaoDB[i].ApostaVigente.EmailApostador = comprador.Email
+						itensLeilaoDB[i].ApostaVigente.Valor = lanceLeilao.Valor
+						ehMaiorLance = true
+						fmt.Println("[LEILAO_SERVER]: Leilao alterado", itensLeilaoDB[i].ApostaVigente)
+
+					} else {
+						ehMaiorLance = false
+					}
 					break
 				}
 			}
-		case "sair":
-			fmt.Println("Cliente desconectado: ", cliente)
-			conn.Write([]byte("Cliente desconectado!"))
-			return
-		default:
-			fmt.Println("Mensagem desconhecida: ", request.Params)
-			conn.Write([]byte("Mensagem desconhecida!"))
+			var message string
+
+			if ehMaiorLance {
+				message = "O seu lance foi o maior até o momento"
+			} else {
+				message = "O seu lance foi aceito"
+			}
+			if !maiorQueValorInicial {
+				message = "Você precisa colocar um valor maior que o valor inicial"
+			}
+
+			sendMessageToClient(connection, message)
 		}
 	}
 }
 
-func handleComprador(conn net.Conn, cliente Cliente) {
+func handleVendedor(connection net.Conn, vendedor DbCliente) {
 	for {
-		message := handleMessage(conn)
-		var request Request
-		json.Unmarshal([]byte(message), &request)
+		message := handleSocketMessage(connection)
+		var jsonMsg Message
+		json.Unmarshal([]byte(message), &jsonMsg)
+		switch jsonMsg.Operacao {
+		case "CRIAR_LEILAO":
+			var itemLeilao MessageCriarLeilao
+			json.Unmarshal(jsonMsg.Message, &itemLeilao)
+			valorInicial, err := strconv.Atoi(itemLeilao.Valor)
+			if err != nil {
+				valorInicial = 0
+				fmt.Println("[LEILAO_SERVER] Erro ao converter valor do leilão a ser criado", itemLeilao)
+			}
+			itemLeilaoDB := ItemLeilaoDB{
+				Id:           generateRandomId(),
+				Nome:         itemLeilao.Nome,
+				Descricao:    itemLeilao.Descricao,
+				IdVendedor:   vendedor.Id,
+				ValorInicial: valorInicial,
+				Status:       LEILAO_ATIVO,
+			}
+			itensLeilaoDB = append(itensLeilaoDB, itemLeilaoDB)
+			message := vendedor.Nome + " o leilao com o item " + itemLeilao.Nome + " foi criado com sucesso"
+			sendMessageToClient(connection, message)
 
-		switch request.Params {
-		case "listarLeiloes":
-			var response ResponseListarLeiloes
-			for _, leilao := range leiloes {
-				if leilao.Status == "aberto" {
-					response.Leiloes = append(response.Leiloes, leilao)
+		case "ENCERRAR_LEILAO":
+			var idLeilao MessageEncerrarLeilao
+			json.Unmarshal(jsonMsg.Message, &idLeilao)
+			var exists = false
+			var foundItem ItemLeilaoDB
+			for i, value := range itensLeilaoDB {
+				if value.Id == idLeilao.Id && value.IdVendedor == vendedor.Id {
+					exists = true
+					itensLeilaoDB[i].Status = LEILAO_ENCERRADO
+					foundItem = value
 				}
 			}
-			json, _ := json.Marshal(response)
-			conn.Write(json)
-		case "criarLance":
-			var requestCriarLance RequestCriarLance
-			json.Unmarshal(request.Valor, &requestCriarLance)
-			for _, leilao := range leiloes {
-				if leilao.Id == requestCriarLance.IdLeilao {
-					if leilao.Status == "aberto" {
-						if requestCriarLance.Valor > leilao.LanceMinimo {
-							leilao.LanceMinimo = requestCriarLance.Valor
-							leilao.Vencedor = cliente.Email
-							conn.Write([]byte("Lance criado com sucesso!"))
-							break
-						} else {
-							conn.Write([]byte("Valor do lance menor que o lance minimo!"))
-							break
-						}
-					}
+
+			if !exists {
+				message := "O leilao com o id " + idLeilao.Id + " não existe"
+				sendMessageToClient(connection, message)
+			}
+			var message string
+
+			if foundItem.ApostaVigente.EmailApostador != "" {
+				message = vendedor.Nome + " o leilao com o item " + foundItem.Nome + " foi encerrado com sucesso e o vencedor foi " + foundItem.ApostaVigente.EmailApostador + " com o valor " + strconv.Itoa(foundItem.ApostaVigente.Valor)
+			} else {
+				message = vendedor.Nome + " o leilao com o item " + foundItem.Nome + " foi encerrado com sucesso mas não teve lances"
+			}
+
+			sendMessageToClient(connection, message)
+		case "LISTAR_LEILOES":
+			var leiloesAEnviar []ItemLeilaoVendedor
+			for i, ild := range itensLeilaoDB {
+				if ild.Status == LEILAO_ATIVO && ild.IdVendedor == vendedor.Id {
+					leiloesAEnviar = append(leiloesAEnviar, ItemLeilaoVendedor{
+						Id:   itensLeilaoDB[i].Id,
+						Nome: itensLeilaoDB[i].Nome,
+					})
 				}
 			}
-		case "sair":
-			fmt.Println("Cliente desconectado: ", clientes[0])
-			conn.Write([]byte("Cliente desconectado!"))
+
+			message, _ := json.Marshal(&MessageRespostaListarLeiloesVendedor{
+				Leiloes: leiloesAEnviar,
+			})
+			sendMessageToClient(connection, string(message))
+		case "SAIR":
+			connection.Close()
 			return
 		default:
-			fmt.Println("Mensagem desconhecida: ", request.Params)
-			conn.Write([]byte("Mensagem desconhecida!"))
+			fmt.Println("[LEILAO_SERVER] Operacao nao reconhecida")
+			message := "Operação não reconhecida"
+			sendMessageToClient(connection, message)
 		}
-
 	}
 }
 
-func handleMessage(conn net.Conn) string {
+func handleSocketMessage(connection net.Conn) string {
 	buffer := make([]byte, 1024)
-	length, err := conn.Read(buffer)
-	if err != nil {
-		log.Fatal("Erro ao ler do cliente: ", err)
-	}
-	return string(buffer[:length])
+	mLen, err := connection.Read(buffer)
+	handleConnectionError(connection, err, "Perdemos a conexão com o cliente:")
+	fmt.Println("[LEILAO_SERVER] Mensagem recebida no socket: ", string(buffer[:mLen]), "do client", connection.RemoteAddr())
+	return string(buffer[:mLen])
+}
+
+func generateRandomId() string {
+	return strconv.Itoa((rand.Intn(1000000)))
+}
+
+func sendMessageToClient(connection net.Conn, message string) {
+	_, err := connection.Write([]byte(message))
+	handleConnectionError(connection, err, "Error writing")
 }
