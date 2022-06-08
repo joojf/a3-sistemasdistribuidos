@@ -34,16 +34,16 @@ type Message struct {
 }
 
 type ItemLeilaoCliente struct {
-	Id            string `json:"id"`
-	Nome          string `json:"nome"`
-	Descricao     string `json:"descricao"`
-	ValorInicial  int    `json:"valorInicial"`
-	ApostaVigente Aposta `json:"apostaVigente"`
+	Id           string `json:"id"`
+	Nome         string `json:"nome"`
+	Descricao    string `json:"descricao"`
+	ValorInicial int    `json:"valorInicial"`
+	LanceAtual   Lance  `json:"lanceAtual"`
 }
 
-type Aposta struct {
-	EmailApostador string `json:"emailApostador"`
-	Valor          int    `json:"valor"`
+type Lance struct {
+	Email string `json:"Email"`
+	Valor int    `json:"valor"`
 }
 
 type MessageListaDeLeiloes struct {
@@ -74,14 +74,14 @@ func main() {
 
 	_, err = connection.Write(vendedor)
 	if err != nil {
-		fmt.Println("Error writing:", err.Error())
+		fmt.Println("Erro ao enviar mensagem para o servidor")
 	}
 	buffer := make([]byte, 1024)
 	mLen, err := connection.Read(buffer)
 	if err != nil {
-		fmt.Println("Error reading:", err.Error())
+		fmt.Println("Erro ao receber mensagem do servidor")
 	}
-	fmt.Println("Received: ", string(buffer[:mLen]))
+	fmt.Println("Resposta do servidor:", string(buffer[:mLen]))
 
 	defer connection.Close()
 	defer func() {
@@ -93,7 +93,7 @@ func main() {
 
 		prompt := promptui.Select{
 			Label: "Selecione a operação",
-			Items: []string{"Listar Artigos", "Dar Lance", "Sair"},
+			Items: []string{"Listar Artigos", "Fazer um lance", "Sair"},
 		}
 		_, result, err := prompt.Run()
 
@@ -102,8 +102,6 @@ func main() {
 			continue
 		}
 		handleUserResponse(result, connection)
-
-		fmt.Printf("You choose %q\n", result)
 	}
 }
 
@@ -127,13 +125,14 @@ func handleUserResponse(response string, connection net.Conn) {
 		for _, leilao := range listaLeiloes {
 			var maiorLance string
 			maiorLance = "Sem lances"
-			if (leilao.ApostaVigente != Aposta{}) {
-				maiorLance = strconv.Itoa(leilao.ApostaVigente.Valor)
+			if (leilao.LanceAtual != Lance{}) {
+				maiorLance = strconv.Itoa(leilao.LanceAtual.Valor)
 			}
-			fmt.Printf("Id: %s - Nome: %s - Descricao: %s - Valor Inicial: %v - Maior Lance: %s\n", leilao.Id, leilao.Nome, leilao.Descricao, leilao.ValorInicial, maiorLance)
+			fmt.Printf("Nome: %s\nDescrição: %s\nValor inicial: %d\nMaior lance: %s\n", leilao.Nome, leilao.Descricao, leilao.ValorInicial, maiorLance)
+			fmt.Printf("-----------------------------------------------------\n")
 		}
 		return
-	case "Dar Lance":
+	case "Fazer um lance":
 		messageListarLeiloes, _ := json.Marshal(&Message{
 			Operacao: "LISTAR_LEILOES",
 			Message:  make([]byte, 0),
@@ -208,35 +207,12 @@ func promptCredentials() (nome, email string) {
 	}
 
 	nome, err1 := promptNome.Run()
-	handleError(err1, "Error reading name: %v\n")
+	handleError(err1, "Erro ao colocar nome: %v\n")
 
 	email, err2 := promptEmail.Run()
-	handleError(err2, "Error reading email: %v\n")
+	handleError(err2, "Erro ao colocar email: %v\n")
 
 	return nome, email
-}
-
-func promptAuctionDetails() (nome, descricao string, valorInicial string) {
-	promptNome := promptui.Prompt{
-		Label: "Name",
-	}
-	promptDescricao := promptui.Prompt{
-		Label: "Descricao",
-	}
-	promptValor := promptui.Prompt{
-		Label: "Valor Inicial",
-	}
-
-	nome, err1 := promptNome.Run()
-	handleError(err1, "Error reading nome: %v\n")
-
-	email, err2 := promptDescricao.Run()
-	handleError(err2, "Error reading email: %v\n")
-
-	descricao, err3 := promptValor.Run()
-	handleError(err3, "Error reading valor: %v\n")
-
-	return nome, email, descricao
 }
 
 func handleError(err error, message string) {
@@ -264,9 +240,4 @@ func receiveMessageFromServer(connection net.Conn) string {
 	mLen, err := connection.Read(buffer)
 	handleConnectionError(connection, err, "Perdemos a conexão com o servidor")
 	return string(buffer[:mLen])
-}
-
-func prettyPrint(i interface{}) string {
-	s, _ := json.MarshalIndent(i, "", "\t")
-	return string(s)
 }

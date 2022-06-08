@@ -59,14 +59,14 @@ func main() {
 
 	_, err = connection.Write(vendedor)
 	if err != nil {
-		fmt.Println("Error writing:", err.Error())
+		fmt.Println("Erro ao enviar credenciais: %v\n", err.Error())
 	}
 	buffer := make([]byte, 1024)
 	mLen, err := connection.Read(buffer)
 	if err != nil {
-		fmt.Println("Error reading:", err.Error())
+		fmt.Println("Erro ao receber credenciais: %v\n", err.Error())
 	}
-	fmt.Println("Received: ", string(buffer[:mLen]))
+	fmt.Println("Resposta do servidor: " + string(buffer[:mLen]))
 
 	defer connection.Close()
 	defer func() {
@@ -78,20 +78,18 @@ func main() {
 
 		prompt := promptui.Select{
 			Label: "Selecione a operação",
-			Items: []string{"Iniciar Leilao", "Encerrar Leilao", "Sair"},
+			Items: []string{"Iniciar Leilão", "Encerrar Leilão", "Sair"},
 		}
 		_, result, err := prompt.Run()
 
 		handleError(err, "Erro ao selecionar opção: %v\n")
 		handleUserResponse(result, connection)
-
-		fmt.Printf("You choose %q\n", result)
 	}
 }
 
 func handleUserResponse(response string, connection net.Conn) {
 	switch response {
-	case "Iniciar Leilao":
+	case "Iniciar Leilão":
 		nome, descricao, valorInicial := promptAuctionDetails()
 		item, _ := json.Marshal(&ItemLeilao{
 			Nome:      nome,
@@ -104,9 +102,9 @@ func handleUserResponse(response string, connection net.Conn) {
 		})
 		sendMessageToServer(connection, message, "Erro ao criar leilão: %v\n")
 		receivedMessage := receiveMessageFromServer(connection)
-		fmt.Println("Received from server: " + receivedMessage)
+		fmt.Println("Resposta do servidor: " + receivedMessage)
 		return
-	case "Encerrar Leilao":
+	case "Encerrar Leilão":
 		messageListarLeiloes, _ := json.Marshal(&Message{
 			Operacao: "LISTAR_LEILOES",
 			Message:  make([]byte, 0),
@@ -160,33 +158,33 @@ func promptCredentials() (nome, email string) {
 	}
 
 	nome, err1 := promptNome.Run()
-	handleError(err1, "Error reading name: %v\n")
+	handleError(err1, "Erro ao obter nome: %v\n")
 
 	email, err2 := promptEmail.Run()
-	handleError(err2, "Error reading email: %v\n")
+	handleError(err2, "Erro ao obter email: %v\n")
 
 	return nome, email
 }
 
 func promptAuctionDetails() (nome, descricao string, valorInicial string) {
 	promptNome := promptui.Prompt{
-		Label: "Name",
+		Label: "Nome do artigo",
 	}
 	promptDescricao := promptui.Prompt{
-		Label: "Descricao",
+		Label: "Descrição do artigo",
 	}
 	promptValor := promptui.Prompt{
-		Label: "Valor Inicial",
+		Label: "Valor inicial",
 	}
 
 	nome, err1 := promptNome.Run()
-	handleError(err1, "Error reading nome: %v\n")
+	handleError(err1, "Erro ao obter nome: %v\n")
 
 	email, err2 := promptDescricao.Run()
-	handleError(err2, "Error reading email: %v\n")
+	handleError(err2, "Erro ao obter email: %v\n")
 
 	descricao, err3 := promptValor.Run()
-	handleError(err3, "Error reading valor: %v\n")
+	handleError(err3, "Erro ao obter email: %v\n")
 
 	return nome, email, descricao
 }
